@@ -280,6 +280,7 @@ class Pool:
                     continue
                 # TODO: wait for all payments confirmed
 
+                # MK: If there are pending payments, skip this iteration
                 assert len(self.pending_payments) == 0
 
                 coin_records: List[CoinRecord] = await self.full_node_client.get_coin_records_by_puzzle_hash(
@@ -288,24 +289,30 @@ class Pool:
 
                 coins_to_distribute: List[Coin] = []
                 for coin_record in coin_records:
+                    # MK: looks like get_coin_records_by_puzzle_hash() may return spent coins
+                    # despite the argument saying not to
                     assert not coin_record.spent
                     if (
                         coin_record.spent_block_index
                         > self.blockchain_state["peak"].height - self.confirmation_security_threshold
                     ):
-                        continue
-                    coins_to_distribute.append(coin_record.coin)
+                        continue # MK: if the coin looks spent but it's not yet confirmed, skip it
+                    coins_to_distribute.append(coin_record.coin) # MK: otherwise, remember this needs to be distributed
 
                 if len(coins_to_distribute) == 0:
                     self.log.info("No funds to distribute.")
                     continue
 
                 total_amount_claimed = sum([c.amount for c in coins_to_distribute])
-                pool_coin_amount = int(total_amount_claimed * self.pool_fee)
+                pool_coin_amount = int(total_amount_claimed * self.pool_fee) # MK: GET MONEY
                 amount_to_distribute = total_amount_claimed - pool_coin_amount
 
                 async with self.store.lock:
                     # Get the points of each farmer
+                    # MK: after reading some of the chat, I think "points" basically represent the farmer's percentage
+                    # of the pool's netspace, except that you could have custom logic to change a farmer's point value
+                    # if you wanted to give discounted fees, grant some bonuses, etc. Seems like a bad way to do that,
+                    # and maybe it's not intended to be used that way, but it seems like that might be the intention.
                     points_and_ph: List[Tuple[uint64, bytes32]] = await self.store.get_farmer_points_and_ph()
                     total_points = sum([pt for (pt, ph) in points_and_ph])
                     mojo_per_point = amount_to_distribute / total_points
@@ -323,7 +330,7 @@ class Pool:
                             additions_sub_list = []
 
                     # Subtract the points from each farmer
-                    await self.store.clear_farmer_points()
+                    await self.store.clear_farmer_points() # MK: I guess this is calculated dynamically upon each new block?
 
                 await asyncio.sleep(self.payment_interval)
             except asyncio.CancelledError:
